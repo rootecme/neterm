@@ -211,6 +211,12 @@ jobs:
           sparse-checkout: applets/neterm
           fetch-depth: 1
 
+      - name: Drop git index before build
+        # Cargo 1.95 uses gitoxide to enumerate package files. In the Linux
+        # container its excludes stack can fail on the Actions workspace. An
+        # empty index makes Cargo fall back to its plain directory walk.
+        run: rm -f "$GITHUB_WORKSPACE/.git/index"
+
       - name: Install Rust toolchain
         run: |
           curl --proto '=https' --tlsv1.2 --silent --show-error --fail \
@@ -270,6 +276,12 @@ jobs:
           persist-credentials: false
           sparse-checkout: applets/neterm
           fetch-depth: 1
+
+      - name: Drop git index before build
+        # Cargo 1.95 uses gitoxide to enumerate package files. In the Linux
+        # container its excludes stack can fail on the Actions workspace. An
+        # empty index makes Cargo fall back to its plain directory walk.
+        run: rm -f "$GITHUB_WORKSPACE/.git/index"
 
       - name: Install Rust toolchain
         run: |
@@ -343,6 +355,12 @@ jobs:
           persist-credentials: false
           sparse-checkout: applets/neterm
           fetch-depth: 1
+
+      - name: Drop git index before build
+        # Cargo 1.95 uses gitoxide to enumerate package files. In the Linux
+        # container its excludes stack can fail on the Actions workspace. An
+        # empty index makes Cargo fall back to its plain directory walk.
+        run: rm -f "$GITHUB_WORKSPACE/.git/index"
 
       - name: Install Rust toolchain
         run: |
