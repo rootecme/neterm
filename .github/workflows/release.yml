@@ -17,6 +17,14 @@ on:
         description: Rebuild tags that already exist in this repository
         type: boolean
         default: false
+      latest:
+        description: Also build the newest release tag, even if it already exists
+        type: boolean
+        default: false
+      tag:
+        description: Build only this release tag (e.g. release/neterm/v0.8.1)
+        required: false
+        default: ''
       include_nightly:
         description: Build the latest topic_sketch main as nightly
         type: boolean
@@ -77,6 +85,8 @@ jobs:
         env:
           LIMIT: ${{ inputs.limit }}
           FORCE: ${{ inputs.force }}
+          LATEST: ${{ inputs.latest }}
+          TAG: ${{ inputs.tag }}
           INCLUDE_NIGHTLY: ${{ inputs.include_nightly }}
         run: |
           set -euo pipefail
@@ -85,16 +95,38 @@ jobs:
             exit 1
           fi
 
-          if [[ "$FORCE" == "true" ]]; then
-            missing="$(cat "$RUNNER_TEMP/source-tags.txt")"
+          if [[ -n "$TAG" ]]; then
+            if [[ ! "$TAG" =~ ^release/neterm/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "tag must look like release/neterm/vX.Y.Z, got: $TAG" >&2
+              exit 1
+            fi
+            if ! grep -Fxq "$TAG" "$RUNNER_TEMP/source-tags.txt"; then
+              echo "tag $TAG does not exist in $SOURCE_REPOSITORY" >&2
+              exit 1
+            fi
+            selected="$TAG"
           else
-            missing="$(comm -23 "$RUNNER_TEMP/source-tags.txt" "$RUNNER_TEMP/target-tags.txt")"
-          fi
+            if [[ "$FORCE" == "true" ]]; then
+              missing="$(cat "$RUNNER_TEMP/source-tags.txt")"
+            else
+              missing="$(comm -23 "$RUNNER_TEMP/source-tags.txt" "$RUNNER_TEMP/target-tags.txt")"
+            fi
 
-          # Oldest first so repeated runs fill the backlog from the front.
-          missing="$(printf '%s\n' "$missing" | sed '/^$/d' | sort -V)"
-          if [[ "$LIMIT" != "0" ]]; then
-            missing="$(printf '%s\n' "$missing" | head -n "$LIMIT")"
+            # Oldest first so repeated runs fill the backlog from the front.
+            missing="$(printf '%s\n' "$missing" | sed '/^$/d' | sort -V)"
+            if [[ "$LIMIT" != "0" ]]; then
+              missing="$(printf '%s\n' "$missing" | head -n "$LIMIT")"
+            fi
+
+            selected="$missing"
+            if [[ "$LATEST" == "true" ]]; then
+              latest_tag="$(sed '/^$/d' "$RUNNER_TEMP/source-tags.txt" | sort -V | tail -n 1)"
+              if [[ -n "$latest_tag" ]]; then
+                selected="$(printf '%s\n%s\n' "$selected" "$latest_tag")"
+              fi
+            fi
+
+            selected="$(printf '%s\n' "$selected" | sed '/^$/d' | sort -V -u)"
           fi
 
           entries="[]"
@@ -103,7 +135,7 @@ jobs:
             slug="${tag//\//-}"
             entries="$(jq -c --arg ref "$tag" --arg tag "$tag" --arg slug "$slug" \
               '. + [{ref: $ref, tag: $tag, slug: $slug, nightly: false}]' <<<"$entries")"
-          done <<<"$missing"
+          done <<<"$selected"
 
           if [[ "$INCLUDE_NIGHTLY" == "true" ]]; then
             entries="$(jq -c \
