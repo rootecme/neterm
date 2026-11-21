@@ -430,6 +430,7 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
           TAG: ${{ matrix.tag }}
           REF: ${{ matrix.ref }}
           NIGHTLY: ${{ matrix.nightly }}
@@ -466,7 +467,24 @@ jobs:
             exit 0
           fi
 
-          printf 'neterm %s\n' "${TAG##*/}" > "$notes_file"
+          source_ref="$(GH_TOKEN="$SOURCE_TOKEN" gh api \
+            "repos/${SOURCE_REPOSITORY}/git/ref/tags/${TAG}")"
+          source_type="$(jq -r '.object.type' <<<"$source_ref")"
+          if [[ "$source_type" == "tag" ]]; then
+            source_sha="$(jq -r '.object.sha' <<<"$source_ref")"
+            source_tag="$(GH_TOKEN="$SOURCE_TOKEN" gh api \
+              "repos/${SOURCE_REPOSITORY}/git/tags/${source_sha}")"
+            jq -e -r '.message | select(type == "string" and test("\\S"))' \
+              <<<"$source_tag" > "$notes_file" || {
+                echo "Annotated source tag $TAG has no release message." >&2
+                exit 1
+              }
+          elif [[ "$source_type" == "commit" ]]; then
+            printf 'neterm %s\n' "${TAG##*/}" > "$notes_file"
+          else
+            echo "Source tag $TAG has unexpected object type: $source_type" >&2
+            exit 1
+          fi
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$notes_file"
             gh release upload "$TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
