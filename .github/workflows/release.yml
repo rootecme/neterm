@@ -55,6 +55,9 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       count: ${{ steps.matrix.outputs.count }}
+      stable_matrix: ${{ steps.matrix.outputs.stable_matrix }}
+      stable_count: ${{ steps.matrix.outputs.stable_count }}
+      include_nightly: ${{ steps.matrix.outputs.include_nightly }}
     steps:
       - name: List topic_sketch release tags
         env:
@@ -144,9 +147,14 @@ jobs:
           fi
 
           count="$(jq 'length' <<<"$entries")"
+          stable_entries="$(jq -c '[.[] | select(.nightly == false)]' <<<"$entries")"
+          stable_count="$(jq 'length' <<<"$stable_entries")"
           printf '{"include":%s}\n' "$entries" > "$RUNNER_TEMP/matrix.json"
           echo "matrix=$(cat "$RUNNER_TEMP/matrix.json")" >> "$GITHUB_OUTPUT"
           echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "stable_matrix={\"include\":$stable_entries}" >> "$GITHUB_OUTPUT"
+          echo "stable_count=$stable_count" >> "$GITHUB_OUTPUT"
+          echo "include_nightly=$INCLUDE_NIGHTLY" >> "$GITHUB_OUTPUT"
 
           {
             echo "### neterm release sync"
@@ -411,13 +419,13 @@ jobs:
       - linux-x86-64
       - macos-arm64
       - windows-x86-64
-    if: ${{ always() && needs.prepare.result == 'success' && needs.prepare.outputs.count != '0' }}
+    if: ${{ always() && needs.prepare.result == 'success' && needs.prepare.outputs.stable_count != '0' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
       max-parallel: 1
-      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.stable_matrix) }}
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -432,8 +440,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
           TAG: ${{ matrix.tag }}
-          REF: ${{ matrix.ref }}
-          NIGHTLY: ${{ matrix.nightly }}
           DRAFT: ${{ inputs.draft }}
         run: |
           set -euo pipefail
@@ -450,23 +456,6 @@ jobs:
           assets=("${debs[0]}" "${dmgs[0]}" "${zips[0]}")
 
           notes_file="$(mktemp)"
-          if [[ "$NIGHTLY" == "true" ]]; then
-            printf 'neterm nightly build from `%s`\n' "$REF" > "$notes_file"
-            # Recreate the nightly release so it stays on top of the releases
-            # page while keeping the `nightly` download URLs stable.
-            gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes >/dev/null 2>&1 || true
-            gh release create "$TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --target main \
-              --title "neterm nightly" \
-              --notes-file "$notes_file" \
-              --prerelease \
-              --draft
-            gh release upload "$TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
-            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
-            exit 0
-          fi
-
           source_ref="$(GH_TOKEN="$SOURCE_TOKEN" gh api \
             "repos/${SOURCE_REPOSITORY}/git/ref/tags/${TAG}")"
           source_type="$(jq -r '.object.type' <<<"$source_ref")"
@@ -501,3 +490,52 @@ jobs:
           if [[ "$DRAFT" != "true" ]]; then
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
           fi
+
+  publish-nightly:
+    name: Publish nightly last
+    needs:
+      - prepare
+      - publish
+    if: ${{ always() && !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.include_nightly == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Download nightly build artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: neterm-*-nightly
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          shopt -s nullglob
+
+          debs=(release-assets/neterm_*_linux_amd64.deb)
+          dmgs=(release-assets/neterm_*_macos_aarch64.dmg)
+          zips=(release-assets/neterm_*_windows_x86_64.zip)
+          if (( ${#debs[@]} != 1 || ${#dmgs[@]} != 1 || ${#zips[@]} != 1 )); then
+            echo "::warning::Incomplete artifacts for nightly (deb=${#debs[@]} dmg=${#dmgs[@]} zip=${#zips[@]}); skipping."
+            exit 0
+          fi
+          assets=("${debs[0]}" "${dmgs[0]}" "${zips[0]}")
+
+          notes_file="$(mktemp)"
+          printf 'neterm nightly build from `main`\n' > "$notes_file"
+          # Recreate nightly after stable releases so it appears first on the
+          # Releases page while keeping the nightly download URLs stable.
+          gh release delete nightly --repo "$GITHUB_REPOSITORY" --yes >/dev/null 2>&1 || true
+          gh release create nightly \
+            --repo "$GITHUB_REPOSITORY" \
+            --target main \
+            --title "neterm nightly" \
+            --notes-file "$notes_file" \
+            --prerelease \
+            --draft
+          gh release upload nightly "${assets[@]}" --repo "$GITHUB_REPOSITORY"
+          gh release edit nightly --repo "$GITHUB_REPOSITORY" --draft=false
