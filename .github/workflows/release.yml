@@ -520,22 +520,43 @@ jobs:
           dmgs=(release-assets/neterm_*_macos_aarch64.dmg)
           zips=(release-assets/neterm_*_windows_x86_64.zip)
           if (( ${#debs[@]} != 1 || ${#dmgs[@]} != 1 || ${#zips[@]} != 1 )); then
-            echo "::warning::Incomplete artifacts for nightly (deb=${#debs[@]} dmg=${#dmgs[@]} zip=${#zips[@]}); skipping."
-            exit 0
+            echo "::error::Incomplete artifacts for nightly (deb=${#debs[@]} dmg=${#dmgs[@]} zip=${#zips[@]}); keeping the previous release."
+            exit 1
           fi
           assets=("${debs[0]}" "${dmgs[0]}" "${zips[0]}")
 
           notes_file="$(mktemp)"
           printf 'neterm nightly build from `main`\n' > "$notes_file"
-          # Recreate nightly after stable releases so it appears first on the
-          # Releases page while keeping the nightly download URLs stable.
-          gh release delete nightly --repo "$GITHUB_REPOSITORY" --yes >/dev/null 2>&1 || true
+          target_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          # Recreate both the release and its tag. An existing tag would make
+          # --target ineffective, leaving nightly attached to an older commit.
+          if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete nightly --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          fi
+          # Handle a tag left behind by an earlier release deletion.
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/nightly" >/dev/null 2>&1; then
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly"
+          fi
           gh release create nightly \
             --repo "$GITHUB_REPOSITORY" \
-            --target main \
+            --target "$target_sha" \
             --title "neterm nightly" \
             --notes-file "$notes_file" \
             --prerelease \
             --draft
           gh release upload nightly "${assets[@]}" --repo "$GITHUB_REPOSITORY"
           gh release edit nightly --repo "$GITHUB_REPOSITORY" --draft=false
+          tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/nightly" --jq '.object.sha')"
+          if [[ "$tag_sha" != "$target_sha" ]]; then
+            echo "::error::nightly tag points to $tag_sha instead of $target_sha"
+            exit 1
+          fi
+          {
+            echo "### nightly release"
+            echo ""
+            echo "Tag commit: \`$tag_sha\`"
+            echo ""
+            echo "Recent release order:"
+            gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=10" \
+              --jq '.[] | "- \(.tag_name) (published \(.published_at))"'
+          } >> "$GITHUB_STEP_SUMMARY"
